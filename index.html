@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Neon Duo: Faster Dudes</title>
+    <style>
+        body { margin: 0; background: #111; overflow: hidden; font-family: 'Courier New', monospace; color: #0f0; }
+        canvas { display: block; background: #000; margin: 0 auto; border: 4px solid #333; cursor: crosshair; }
+        #menu { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: rgba(0,0,0,0.9); padding: 40px; border: 2px solid #0f0; z-index: 10; }
+        button { background: #000; color: #0f0; border: 2px solid #0f0; padding: 15px 30px; font-size: 20px; cursor: pointer; margin: 10px; font-family: inherit; }
+        button:hover { background: #0f0; color: #000; }
+        #ui { position: absolute; top: 20px; left: 20px; pointer-events: none; display: none; }
+        .stat { font-size: 20px; margin-bottom: 5px; text-shadow: 0 0 10px #0f0; }
+        .high-score { color: #ff0; }
+    </style>
+</head>
+<body>
+    <div id="menu">
+        <h1>NEON SURVIVOR: AGGRESSIVE</h1>
+        <p>WASD to Move | Mouse to Aim | Click to Shoot</p>
+        <div class="stat high-score">ALL-TIME BEST: <span id="bestVal">0</span></div>
+        <button onclick="startGame(false)">SOLO (1 PLAYER)</button>
+        <button onclick="startGame(true)">CO-OP (WITH AI BUDDY)</button>
+    </div>
+
+    <div id="ui">
+        <div class="stat">SCORE: <span id="scoreVal">0</span></div>
+        <div class="stat" style="color: #00faff;">P1 LIVES: <span id="p1Lives">3</span></div>
+        <div id="aiStat" class="stat" style="color: #0f0; display: none;">AI LIVES: <span id="p2Lives">3</span></div>
+        <div class="stat high-score">BEST: <span id="bestValUI">0</span></div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const menu = document.getElementById('menu');
+        const ui = document.getElementById('ui');
+        
+        canvas.width = 900;
+        canvas.height = 600;
+
+        let score = 0;
+        let gameRunning = false;
+        let useAI = false;
+        const keys = {};
+        const mouse = { x: 0, y: 0 };
+        const MAX_ENEMIES = 25;
+
+        let highScore = localStorage.getItem('neonSurvivor_highScore') || 0;
+        document.getElementById('bestVal').innerText = highScore;
+        document.getElementById('bestValUI').innerText = highScore;
+
+        window.addEventListener('keydown', e => {
+            if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+            keys[e.code] = true;
+        });
+        window.addEventListener('keyup', e => keys[e.code] = false);
+        window.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        });
+
+        class Player {
+            constructor(x, y, color, isAI) {
+                this.x = x; this.y = y;
+                this.size = 20; this.speed = 4.5;
+                this.color = color;
+                this.lives = 3;
+                this.isAI = isAI;
+                this.angle = 0;
+                this.lastShot = 0;
+                this.reactionDelay = 500;
+                this.spotTime = 0;
+                this.currentTarget = null;
+            }
+
+            update(enemies) {
+                if (!this.isAI) {
+                    if (keys['KeyW'] || keys['ArrowUp']) this.y -= this.speed;
+                    if (keys['KeyS'] || keys['ArrowDown']) this.y += this.speed;
+                    if (keys['KeyA'] || keys['ArrowLeft']) this.x -= this.speed;
+                    if (keys['KeyD'] || keys['ArrowRight']) this.x += this.speed;
+                    this.angle = Math.atan2(mouse.y - this.y, mouse.x - this.x);
+                } else if (enemies.length > 0) {
+                    let closest = enemies[0];
+                    let minDist = Math.hypot(this.x - closest.x, this.y - closest.y);
+                    enemies.forEach(e => {
+                        let d = Math.hypot(this.x - e.x, this.y - e.y);
+                        if (d < minDist) { closest = e; minDist = d; }
+                    });
+                    if (this.currentTarget !== closest) {
+                        this.currentTarget = closest;
+                        this.spotTime = Date.now();
+                    }
+                    if (Date.now() - this.spotTime > this.reactionDelay) {
+                        this.angle = Math.atan2(closest.y - this.y, closest.x - this.x);
+                        if (minDist > 140) {
+                            this.x += Math.cos(this.angle) * (this.speed * 0.7);
+                            this.y += Math.sin(this.angle) * (this.speed * 0.7);
+                        }
+                        if (Date.now() - this.lastShot > 700) {
+                            const wobble = (Math.random() - 0.5) * 0.2; 
+                            projectiles.push(new Projectile(this.x, this.y, this.angle + wobble, this.color));
+                            this.lastShot = Date.now();
+                        }
+                    }
+                }
+                this.x = Math.max(this.size, Math.min(canvas.width - this.size, this.x));
+                this.y = Math.max(this.size, Math.min(canvas.height - this.size, this.y));
+            }
+
+            draw() {
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x + Math.cos(this.angle) * 40, this.y + Math.sin(this.angle) * 40);
+                ctx.stroke();
+                ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+                ctx.fillStyle = this.color;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, angle, color) {
+                this.x = x; this.y = y; this.size = 4; this.speed = 12; this.color = color;
+                this.vx = Math.cos(angle) * this.speed;
+                this.vy = Math.sin(angle) * this.speed;
+            }
+            update() { this.x += this.vx; this.y += this.vy; }
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+
+        class Enemy {
+            constructor(currentScore) {
+                this.size = 15;
+                const difficultyMultiplier = 1 + (currentScore / 5000);
+                this.isFast = Math.random() < 0.25;
+                
+                // BUFFED SPEEDS: 
+                // Pink: 2.2 (was 1.3) | Seeker: 4.2 (was 4.0)
+                this.speed = (this.isFast ? 4.2 : 2.2) * difficultyMultiplier;
+                
+                this.color = this.isFast ? '#fffb00' : '#f05';
+                this.x = Math.random() < 0.5 ? -30 : canvas.width + 30;
+                this.y = Math.random() * canvas.height;
+            }
+            update(p1, p2) {
+                let target = (p1.lives > 0) ? p1 : p2;
+                if (useAI && p2.lives > 0 && p1.lives > 0) {
+                    target = Math.hypot(this.x-p1.x, this.y-p1.y) < Math.hypot(this.x-p2.x, this.y-p2.y) ? p1 : p2;
+                }
+                const angle = Math.atan2(target.y - this.y, target.x - this.x);
+                this.x += Math.cos(angle) * this.speed;
+                this.y += Math.sin(angle) * this.speed;
+            }
+            draw() { 
+                ctx.fillStyle = this.color;
+                if(this.isFast) { 
+                    ctx.shadowBlur = 15; ctx.shadowColor = '#fffb00'; 
+                    ctx.fillRect(this.x-8, this.y-8, 16, 16);
+                } else {
+                    ctx.fillRect(this.x-10, this.y-10, 20, 20);
+                }
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        let p1, p2, projectiles = [], enemies = [];
+
+        function startGame(withAI) {
+            useAI = withAI;
+            gameRunning = true;
+            menu.style.display = 'none';
+            ui.style.display = 'block';
+            if (useAI) document.getElementById('aiStat').style.display = 'block';
+            p1 = new Player(300, 300, '#00faff', false);
+            p2 = new Player(600, 300, '#0f0', true);
+            spawnEnemy();
+            gameLoop();
+        }
+
+        window.addEventListener('mousedown', () => {
+            if (gameRunning && p1.lives > 0) projectiles.push(new Projectile(p1.x, p1.y, p1.angle, p1.color));
+        });
+
+        function spawnEnemy() {
+            if (gameRunning && enemies.length < MAX_ENEMIES) {
+                enemies.push(new Enemy(score));
+            }
+            let nextSpawn = Math.max(250, 1200 - (score / 20));
+            setTimeout(spawnEnemy, nextSpawn);
+        }
+
+        function gameLoop() {
+            if (!gameRunning) return;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (p1.lives > 0) { p1.update(enemies); p1.draw(); }
+            if (useAI && p2.lives > 0) { p2.update(enemies); p2.draw(); }
+
+            projectiles.forEach((p, pi) => {
+                p.update(); p.draw();
+                if (p.x < 0 || p.x > canvas.width || p.y < 0 || p.y > canvas.height) projectiles.splice(pi, 1);
+            });
+
+            enemies.forEach((en, ei) => {
+                en.update(p1, p2); en.draw();
+                
+                [p1, p2].forEach(p => {
+                    if (p.lives <= 0 || (p === p2 && !useAI)) return;
+                    if (Math.hypot(p.x - en.x, p.y - en.y) < p.size + 10) {
+                        p.lives--;
+                        document.getElementById('p1Lives').innerText = p1.lives;
+                        if (useAI) document.getElementById('p2Lives').innerText = p2.lives;
+                        enemies.splice(ei, 1);
+                        if (p1.lives <= 0 && (!useAI || p2.lives <= 0)) {
+                            gameRunning = false;
+                            if (score > highScore) localStorage.setItem('neonSurvivor_highScore', score);
+                            alert("SQUAD ELIMINATED! Final Score: " + score);
+                            location.reload();
+                        }
+                    }
+                });
+
+                projectiles.forEach((proj, pi) => {
+                    if (Math.hypot(proj.x - en.x, proj.y - en.y) < 20) {
+                        enemies.splice(ei, 1); projectiles.splice(pi, 1);
+                        score += 100; document.getElementById('scoreVal').innerText = score;
+                    }
+                });
+            });
+            requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
